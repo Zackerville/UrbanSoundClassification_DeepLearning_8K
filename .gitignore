@@ -20,3 +20,9 @@ outputs/
 *.pth
 .ipynb_checkpoints/
 .DS_Store
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.h5
+*.pkl
