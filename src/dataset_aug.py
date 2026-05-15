@@ -12,6 +12,7 @@ from config import (
     NUM_WORKERS,
     TEST_FOLD,
     VAL_FOLD,
+    OUTPUT_DIR,
 )
 from preprocess import preprocess_audio_file
 
@@ -19,20 +20,31 @@ from preprocess import preprocess_audio_file
 CLASS_TO_INDEX = {class_name: idx for idx, class_name in enumerate(CLASS_NAMES)}
 INDEX_TO_CLASS = {idx: class_name for class_name, idx in CLASS_TO_INDEX.items()}
 
+CACHE_PATH = OUTPUT_DIR / "cache" / "features.pt"
+
+_CACHE_SINGLETON = None
+
+
+def _load_cache():
+    global _CACHE_SINGLETON
+    if _CACHE_SINGLETON is None:
+        _CACHE_SINGLETON = torch.load(CACHE_PATH, map_location="cpu", weights_only=False)
+    return _CACHE_SINGLETON
+
 
 class SpectrogramAugmentation:
     def __init__(
         self,
-        noise_prob=0.5,
-        noise_std=0.015,
-        time_shift_prob=0.5,
-        max_time_shift=10,
-        freq_mask_prob=0.7,
-        max_freq_mask_width=12,
-        num_freq_masks=2,
-        time_mask_prob=0.7,
-        max_time_mask_width=15,
-        num_time_masks=2,
+        noise_prob=0.25,
+        noise_std=0.01,
+        time_shift_prob=0.35,
+        max_time_shift=6,
+        freq_mask_prob=0.45,
+        max_freq_mask_width=8,
+        num_freq_masks=1,
+        time_mask_prob=0.45,
+        max_time_mask_width=10,
+        num_time_masks=1,
     ):
         self.noise_prob = noise_prob
         self.noise_std = noise_std
@@ -119,56 +131,83 @@ class UrbanSoundDatasetAug(Dataset):
         self.augment = augment and split == "train"
         self.augmenter = augmenter if augmenter is not None else SpectrogramAugmentation()
 
-        self.df = pd.read_csv(self.metadata_path)
+        self.use_cache = CACHE_PATH.exists()
 
-        self.df["audio_path"] = self.df.apply(
-            lambda row: self.audio_dir / f"fold{int(row['fold'])}" / row["slice_file_name"],
-            axis=1
-        )
+        if self.use_cache:
+            self._init_from_cache()
+        else:
+            self._init_from_audio()
 
-        self.df = self.df[self.df["audio_path"].apply(lambda x: x.exists())].reset_index(drop=True)
-        self.df["label"] = self.df["class"].map(CLASS_TO_INDEX)
-
+    def _split_mask(self, folds_tensor):
         if self.split == "train":
             if self.val_fold is None:
                 raise ValueError("val_fold không được để None khi split='train'")
-            self.df = self.df[
-                (self.df["fold"] != self.test_fold) & (self.df["fold"] != self.val_fold)
-            ].reset_index(drop=True)
-
-        elif self.split == "val":
+            return (folds_tensor != self.test_fold) & (folds_tensor != self.val_fold)
+        if self.split == "val":
             if self.val_fold is None:
                 raise ValueError("val_fold không được để None khi split='val'")
-            self.df = self.df[self.df["fold"] == self.val_fold].reset_index(drop=True)
+            return folds_tensor == self.val_fold
+        if self.split == "test":
+            return folds_tensor == self.test_fold
+        raise ValueError("split phải là 'train', 'val' hoặc 'test'")
 
-        elif self.split == "test":
-            self.df = self.df[self.df["fold"] == self.test_fold].reset_index(drop=True)
+    def _init_from_cache(self):
+        cache = _load_cache()
+        folds = cache["folds"]
+        mask = self._split_mask(folds)
+        idx_list = torch.where(mask)[0].tolist()
 
-        else:
-            raise ValueError("split phải là 'train', 'val' hoặc 'test'")
+        self._features = cache["features"][mask].contiguous()
+        self._labels = cache["labels"][mask].contiguous()
+        self._folds = cache["folds"][mask].contiguous()
+        self._file_names = [cache["file_names"][i] for i in idx_list]
+        self._class_names = [cache["class_names"][i] for i in idx_list]
+
+    def _init_from_audio(self):
+        df = pd.read_csv(self.metadata_path)
+        df["audio_path"] = df.apply(
+            lambda row: self.audio_dir / f"fold{int(row['fold'])}" / row["slice_file_name"],
+            axis=1,
+        )
+        df = df[df["audio_path"].apply(lambda x: x.exists())].reset_index(drop=True)
+        df["label"] = df["class"].map(CLASS_TO_INDEX)
+
+        folds = torch.tensor(df["fold"].astype(int).values, dtype=torch.long)
+        mask = self._split_mask(folds).numpy()
+        self.df = df[mask].reset_index(drop=True)
 
     def __len__(self):
+        if self.use_cache:
+            return self._labels.size(0)
         return len(self.df)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        audio_path = row["audio_path"]
-        label = int(row["label"])
-
-        feature = preprocess_audio_file(audio_path)
+        if self.use_cache:
+            feature = self._features[idx].to(torch.float32)
+            label = int(self._labels[idx])
+            class_name = self._class_names[idx]
+            file_name = self._file_names[idx]
+            fold = int(self._folds[idx])
+            audio_path = ""
+        else:
+            row = self.df.iloc[idx]
+            feature = preprocess_audio_file(row["audio_path"])
+            label = int(row["label"])
+            class_name = row["class"]
+            file_name = row["slice_file_name"]
+            fold = int(row["fold"])
+            audio_path = str(row["audio_path"])
 
         if self.augment:
             feature = self.augmenter(feature)
 
-        label = torch.tensor(label, dtype=torch.long)
-
         return {
             "feature": feature,
-            "label": label,
-            "class_name": row["class"],
-            "file_name": row["slice_file_name"],
-            "fold": int(row["fold"]),
-            "audio_path": str(audio_path),
+            "label": torch.tensor(label, dtype=torch.long),
+            "class_name": class_name,
+            "file_name": file_name,
+            "fold": fold,
+            "audio_path": audio_path,
         }
 
 
@@ -216,6 +255,7 @@ class UrbanSoundDataLoaderAug:
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=self.num_workers > 0,
         )
 
     def get_val_loader(self):
@@ -225,6 +265,7 @@ class UrbanSoundDataLoaderAug:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=self.num_workers > 0,
         )
 
     def get_test_loader(self):
@@ -234,6 +275,7 @@ class UrbanSoundDataLoaderAug:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=self.num_workers > 0,
         )
 
     def get_dataloaders(self):
@@ -245,6 +287,7 @@ if __name__ == "__main__":
 
     train_loader, val_loader, test_loader = data_module.get_dataloaders()
 
+    print("Cache mode:", data_module.train_dataset.use_cache)
     print("Train size:", len(data_module.train_dataset))
     print("Val size:", len(data_module.val_dataset))
     print("Test size:", len(data_module.test_dataset))

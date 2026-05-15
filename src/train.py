@@ -6,8 +6,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb
 
-from config import CLASS_NAMES
+from config import CLASS_NAMES, BATCH_SIZE
 from dataset import UrbanSoundDataLoader
 from cnn_baseline import CNNBaseline
 
@@ -22,6 +23,10 @@ SCHEDULER_PATIENCE = 2
 MIN_LR = 1e-6
 
 EARLY_STOPPING_PATIENCE = 5
+
+WANDB_PROJECT = "urban-sound-classification"
+WANDB_RUN_NAME = "cnn_baseline"
+WANDB_GROUP = "cnn_baseline"
 
 
 def set_seed(seed):
@@ -116,7 +121,7 @@ def main():
     train_loader, val_loader, test_loader = data_module.get_dataloaders()
 
     model = CNNBaseline(num_classes=len(CLASS_NAMES)).to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
@@ -129,6 +134,26 @@ def main():
         factor=SCHEDULER_FACTOR,
         patience=SCHEDULER_PATIENCE,
         min_lr=MIN_LR,
+    )
+
+    run = wandb.init(
+        project=WANDB_PROJECT,
+        name=WANDB_RUN_NAME,
+        group=WANDB_GROUP,
+        job_type="train",
+        config={
+            "model_name": "cnn_baseline",
+            "num_classes": len(CLASS_NAMES),
+            "batch_size": BATCH_SIZE,
+            "num_epochs": NUM_EPOCHS,
+            "learning_rate": LEARNING_RATE,
+            "weight_decay": WEIGHT_DECAY,
+            "seed": SEED,
+            "scheduler_factor": SCHEDULER_FACTOR,
+            "scheduler_patience": SCHEDULER_PATIENCE,
+            "min_lr": MIN_LR,
+            "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        },
     )
 
     best_val_acc = 0.0
@@ -170,6 +195,16 @@ def main():
             "val_acc": val_acc,
         })
 
+        run.log({
+            "epoch": epoch + 1,
+            "lr": current_lr,
+            "train_loss": train_loss,
+            "train_acc": train_acc,
+            "val_loss": val_loss,
+            "val_acc": val_acc,
+            "best_val_acc_so_far": max(best_val_acc, val_acc),
+        })
+
         print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}]")
         print(f"LR:         {current_lr:.6f}")
         print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
@@ -179,7 +214,11 @@ def main():
             best_val_acc = val_acc
             best_epoch = epoch + 1
             epochs_without_improvement = 0
-            torch.save(model.state_dict(), checkpoint_dir / "cnn_baseline_best.pth")
+            best_model_path = checkpoint_dir / "cnn_baseline_best.pth"
+            torch.save(model.state_dict(), best_model_path)
+            run.summary["best_val_acc"] = best_val_acc
+            run.summary["best_epoch"] = best_epoch
+            run.summary["best_model_path"] = str(best_model_path)
             print("Best model saved.")
         else:
             epochs_without_improvement += 1
@@ -191,15 +230,23 @@ def main():
             print("Early stopping triggered.")
             break
 
-    torch.save(model.state_dict(), checkpoint_dir / "cnn_baseline_last.pth")
-    save_history(history, log_dir / "cnn_baseline_history.csv")
+    last_model_path = checkpoint_dir / "cnn_baseline_last.pth"
+    history_path = log_dir / "cnn_baseline_history.csv"
+
+    torch.save(model.state_dict(), last_model_path)
+    save_history(history, history_path)
+
+    run.summary["final_epoch"] = history[-1]["epoch"]
+    run.summary["last_model_path"] = str(last_model_path)
+    run.summary["history_path"] = str(history_path)
+    run.finish()
 
     print("Training finished.")
     print(f"Best Val Acc: {best_val_acc:.4f}")
     print(f"Best Epoch: {best_epoch}")
     print(f"Best model path: {checkpoint_dir / 'cnn_baseline_best.pth'}")
-    print(f"Last model path: {checkpoint_dir / 'cnn_baseline_last.pth'}")
-    print(f"History path: {log_dir / 'cnn_baseline_history.csv'}")
+    print(f"Last model path: {last_model_path}")
+    print(f"History path: {history_path}")
 
 
 if __name__ == "__main__":

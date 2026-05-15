@@ -14,9 +14,21 @@ from dataset import UrbanSoundDataLoader
 from resnet import ResNet18
 
 
+RUN_TAG = "resnet18_regular_b32_d05_mix06"
 WANDB_PROJECT = "urban-sound-classification"
-WANDB_RUN_NAME = "resnet18_eval"
-WANDB_GROUP = "resnet18"
+WANDB_RUN_NAME = f"{RUN_TAG}_tta_eval"
+WANDB_GROUP = "resnet18_regular"
+
+DEFAULT_BASE_CHANNELS = 32
+DEFAULT_DROPOUT = 0.5
+TTA_SHIFT = 4
+
+
+def forward_tta(model, features):
+    outputs_1 = model(features)
+    outputs_2 = model(torch.roll(features, shifts=TTA_SHIFT, dims=-1))
+    outputs_3 = model(torch.roll(features, shifts=-TTA_SHIFT, dims=-1))
+    return (outputs_1 + outputs_2 + outputs_3) / 3.0
 
 
 def evaluate_model(model, loader, criterion, device):
@@ -29,14 +41,14 @@ def evaluate_model(model, loader, criterion, device):
     all_preds = []
     all_probs = []
     all_file_names = []
-    all_class_names = []
+    all_true_class_names = []
 
     with torch.no_grad():
         for batch in loader:
             features = batch["feature"].to(device)
             labels = batch["label"].to(device)
 
-            outputs = model(features)
+            outputs = forward_tta(model, features)
             loss = criterion(outputs, labels)
 
             probs = torch.softmax(outputs, dim=1)
@@ -49,12 +61,13 @@ def evaluate_model(model, loader, criterion, device):
             all_preds.extend(preds.cpu().numpy().tolist())
             all_probs.extend(probs.cpu().numpy().tolist())
             all_file_names.extend(batch["file_name"])
-            all_class_names.extend(batch["class_name"])
+            all_true_class_names.extend(batch["class_name"])
 
     test_loss = running_loss / total
     accuracy = accuracy_score(all_labels, all_preds)
     macro_f1 = f1_score(all_labels, all_preds, average="macro")
     cm = confusion_matrix(all_labels, all_preds)
+
     report_dict = classification_report(
         all_labels,
         all_preds,
@@ -82,7 +95,7 @@ def evaluate_model(model, loader, criterion, device):
         "preds": all_preds,
         "probs": all_probs,
         "file_names": all_file_names,
-        "class_names": all_class_names,
+        "true_class_names": all_true_class_names,
     }
 
 
@@ -114,18 +127,29 @@ def save_classification_report(report_dict, save_path):
         writer.writerows(rows)
 
 
-def save_predictions(labels, preds, file_names, class_names, save_path):
+def save_predictions(labels, preds, probs, file_names, true_class_names, save_path):
     with open(save_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["file_name", "true_class_name", "true_label", "pred_label", "pred_class_name"])
+        writer.writerow([
+            "file_name",
+            "true_class_name",
+            "true_label",
+            "pred_label",
+            "pred_class_name",
+            "pred_confidence",
+        ])
 
-        for file_name, true_class_name, true_label, pred_label in zip(file_names, class_names, labels, preds):
+        for file_name, true_class_name, true_label, pred_label, prob_vector in zip(
+            file_names, true_class_names, labels, preds, probs
+        ):
+            pred_confidence = float(prob_vector[pred_label])
             writer.writerow([
                 file_name,
                 true_class_name,
                 true_label,
                 pred_label,
                 CLASS_NAMES[pred_label],
+                pred_confidence,
             ])
 
 
@@ -165,18 +189,35 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     root_dir = Path(__file__).resolve().parent.parent
-    checkpoint_path = root_dir / "outputs" / "checkpoints" / "resnet18_best.pth"
+    checkpoint_path = root_dir / "outputs" / "checkpoints" / f"{RUN_TAG}_best.pth"
     evaluation_dir = root_dir / "outputs" / "evaluation"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
 
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Không tìm thấy checkpoint: {checkpoint_path}")
 
-    data_module = UrbanSoundDataLoader()
-    train_loader, val_loader, test_loader = data_module.get_dataloaders()
+    checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    model = ResNet18(num_classes=len(CLASS_NAMES)).to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        base_channels = checkpoint.get("base_channels", DEFAULT_BASE_CHANNELS)
+        dropout = checkpoint.get("dropout", DEFAULT_DROPOUT)
+    else:
+        state_dict = checkpoint
+        base_channels = DEFAULT_BASE_CHANNELS
+        dropout = DEFAULT_DROPOUT
+
+    data_module = UrbanSoundDataLoader(batch_size=None if False else None)
+    data_module = UrbanSoundDataLoader(num_workers=0)
+    _, _, test_loader = data_module.get_dataloaders()
+
+    model = ResNet18(
+        num_classes=len(CLASS_NAMES),
+        base_channels=base_channels,
+        dropout=dropout,
+    ).to(device)
+
+    model.load_state_dict(state_dict)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -187,19 +228,20 @@ def main():
         device=device,
     )
 
-    metrics_path = evaluation_dir / "resnet18_test_metrics.json"
-    report_path = evaluation_dir / "resnet18_classification_report.csv"
-    predictions_path = evaluation_dir / "resnet18_test_predictions.csv"
-    cm_csv_path = evaluation_dir / "resnet18_confusion_matrix.csv"
-    cm_img_path = evaluation_dir / "resnet18_confusion_matrix.png"
+    metrics_path = evaluation_dir / f"{RUN_TAG}_test_metrics_tta.json"
+    report_path = evaluation_dir / f"{RUN_TAG}_classification_report_tta.csv"
+    predictions_path = evaluation_dir / f"{RUN_TAG}_test_predictions_tta.csv"
+    cm_csv_path = evaluation_dir / f"{RUN_TAG}_confusion_matrix_tta.csv"
+    cm_img_path = evaluation_dir / f"{RUN_TAG}_confusion_matrix_tta.png"
 
     save_metrics(metrics, metrics_path)
     save_classification_report(metrics["report_dict"], report_path)
     save_predictions(
         metrics["labels"],
         metrics["preds"],
+        metrics["probs"],
         metrics["file_names"],
-        metrics["class_names"],
+        metrics["true_class_names"],
         predictions_path,
     )
     save_confusion_matrix_csv(metrics["confusion_matrix"], cm_csv_path)
@@ -207,7 +249,7 @@ def main():
         metrics["confusion_matrix"],
         CLASS_NAMES,
         cm_img_path,
-        "ResNet18 Confusion Matrix",
+        f"{RUN_TAG} TTA Confusion Matrix",
     )
 
     run = wandb.init(
@@ -216,9 +258,12 @@ def main():
         group=WANDB_GROUP,
         job_type="evaluate",
         config={
-            "model_name": "resnet18",
+            "run_tag": RUN_TAG,
             "checkpoint_path": str(checkpoint_path),
             "num_classes": len(CLASS_NAMES),
+            "base_channels": base_channels,
+            "dropout": dropout,
+            "tta_shift": TTA_SHIFT,
         },
     )
 
