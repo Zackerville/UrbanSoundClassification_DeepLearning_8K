@@ -15,10 +15,11 @@ from resnet import ResNet18
 
 
 WANDB_PROJECT = "urban-sound-classification"
-WANDB_RUN_NAME = "resnet18_aug_eval"
+WANDB_RUN_NAME = "resnet18_aug_full_eval"
 WANDB_GROUP = "resnet18_aug"
 
 DROPOUT = 0.5
+BASE_CHANNELS = 64
 
 
 def evaluate_model(model, loader, criterion, device):
@@ -167,7 +168,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     root_dir = Path(__file__).resolve().parent.parent
-    checkpoint_path = root_dir / "outputs" / "checkpoints" / "resnet18_best.pth"
+    checkpoint_path = root_dir / "outputs" / "checkpoints" / "resnet18_aug_best.pth"
     evaluation_dir = root_dir / "outputs" / "evaluation"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,7 +178,11 @@ def main():
     data_module = UrbanSoundDataLoaderAug()
     train_loader, val_loader, test_loader = data_module.get_dataloaders()
 
-    model = ResNet18(num_classes=len(CLASS_NAMES), dropout=DROPOUT).to(device)
+    model = ResNet18(
+        num_classes=len(CLASS_NAMES),
+        base_channels=BASE_CHANNELS,
+        dropout=DROPOUT,
+    ).to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 
     criterion = nn.CrossEntropyLoss()

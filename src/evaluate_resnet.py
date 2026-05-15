@@ -14,13 +14,13 @@ from dataset import UrbanSoundDataLoader
 from resnet import ResNet18
 
 
-RUN_TAG = "resnet18_regular_b32_d05_mix06"
+RUN_TAG = "resnet18_regular_v3"
 WANDB_PROJECT = "urban-sound-classification"
 WANDB_RUN_NAME = f"{RUN_TAG}_tta_eval"
 WANDB_GROUP = "resnet18_regular"
 
 DEFAULT_BASE_CHANNELS = 32
-DEFAULT_DROPOUT = 0.5
+DEFAULT_DROPOUT = 0.3
 TTA_SHIFT = 4
 
 

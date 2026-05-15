@@ -14,23 +14,23 @@ from dataset_aug import UrbanSoundDataLoaderAug
 from resnet import ResNet18
 
 
-NUM_EPOCHS = 40
+NUM_EPOCHS = 50
 LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 1e-3
 SEED = 42
 
-EARLY_STOPPING_PATIENCE = 8
+EARLY_STOPPING_PATIENCE = 10
 LABEL_SMOOTHING = 0.1
 DROPOUT = 0.5
-BASE_CHANNELS = 32
+BASE_CHANNELS = 64
 GRAD_CLIP = 3.0
 
 MIXUP_ALPHA = 0.2
-MIXUP_PROB = 0.0
+MIXUP_PROB = 0.5
 
 WANDB_PROJECT = "urban-sound-classification"
-WANDB_RUN_NAME = "resnet18_small_mixup"
-WANDB_GROUP = "resnet18"
+WANDB_RUN_NAME = "resnet18_aug_full"
+WANDB_GROUP = "resnet18_aug"
 
 
 def set_seed(seed):
