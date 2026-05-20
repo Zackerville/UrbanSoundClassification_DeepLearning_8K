@@ -39,12 +39,12 @@ class SpectrogramAugmentation:
         noise_std=0.01,
         time_shift_prob=0.5,
         max_time_shift=12,
-        freq_mask_prob=0.6,
-        max_freq_mask_width=24,
-        num_freq_masks=2,
-        time_mask_prob=0.6,
-        max_time_mask_width=30,
-        num_time_masks=2,
+        freq_mask_prob=0.4,
+        max_freq_mask_width=16,
+        num_freq_masks=1,
+        time_mask_prob=0.4,
+        max_time_mask_width=15,
+        num_time_masks=1,
     ):
         self.noise_prob = noise_prob
         self.noise_std = noise_std

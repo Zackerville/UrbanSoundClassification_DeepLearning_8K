@@ -15,12 +15,20 @@ from resnet import ResNet18
 
 
 WANDB_PROJECT = "urban-sound-classification"
-WANDB_RUN_NAME = "resnet18_aug_full_tta_eval"
-WANDB_GROUP = "resnet18_aug"
+WANDB_RUN_NAME = "ensemble_resnet_reg_aug_tta_eval"
+WANDB_GROUP = "ensemble"
 
-DROPOUT = 0.5
-BASE_CHANNELS = 64
+RESNET_REG_TAG = "resnet18_regular_v3"
+RESNET_REG_DEFAULT_BASE_CHANNELS = 32
+RESNET_REG_DEFAULT_DROPOUT = 0.3
+
+RESNET_AUG_BASE_CHANNELS = 64
+RESNET_AUG_DROPOUT = 0.5
+
 TTA_SHIFT = 4
+
+ENSEMBLE_WEIGHT_REG = 0.5
+ENSEMBLE_WEIGHT_AUG = 0.5
 
 
 def forward_tta(model, features):
@@ -30,8 +38,44 @@ def forward_tta(model, features):
     return (outputs_1 + outputs_2 + outputs_3) / 3.0
 
 
-def evaluate_model(model, loader, criterion, device):
-    model.eval()
+def load_resnet_regular(checkpoint_path, device):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        base_channels = checkpoint.get("base_channels", RESNET_REG_DEFAULT_BASE_CHANNELS)
+        dropout = checkpoint.get("dropout", RESNET_REG_DEFAULT_DROPOUT)
+    else:
+        state_dict = checkpoint
+        base_channels = RESNET_REG_DEFAULT_BASE_CHANNELS
+        dropout = RESNET_REG_DEFAULT_DROPOUT
+
+    model = ResNet18(
+        num_classes=len(CLASS_NAMES),
+        base_channels=base_channels,
+        dropout=dropout,
+    ).to(device)
+    model.load_state_dict(state_dict)
+    return model, base_channels, dropout
+
+
+def load_resnet_aug(checkpoint_path, device):
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+        state_dict = state_dict["model_state_dict"]
+
+    model = ResNet18(
+        num_classes=len(CLASS_NAMES),
+        base_channels=RESNET_AUG_BASE_CHANNELS,
+        dropout=RESNET_AUG_DROPOUT,
+    ).to(device)
+    model.load_state_dict(state_dict)
+    return model
+
+
+def evaluate_ensemble(model_reg, model_aug, loader, criterion, device):
+    model_reg.eval()
+    model_aug.eval()
 
     running_loss = 0.0
     total = 0
@@ -47,11 +91,19 @@ def evaluate_model(model, loader, criterion, device):
             features = batch["feature"].to(device)
             labels = batch["label"].to(device)
 
-            outputs = forward_tta(model, features)
-            loss = criterion(outputs, labels)
+            logits_reg = forward_tta(model_reg, features)
+            logits_aug = forward_tta(model_aug, features)
 
-            probs = torch.softmax(outputs, dim=1)
-            preds = outputs.argmax(dim=1)
+            probs_reg = torch.softmax(logits_reg, dim=1)
+            probs_aug = torch.softmax(logits_aug, dim=1)
+
+            probs = (
+                ENSEMBLE_WEIGHT_REG * probs_reg
+                + ENSEMBLE_WEIGHT_AUG * probs_aug
+            )
+
+            loss = criterion(torch.log(probs + 1e-8), labels)
+            preds = probs.argmax(dim=1)
 
             running_loss += loss.item() * features.size(0)
             total += labels.size(0)
@@ -125,18 +177,29 @@ def save_classification_report(report_dict, save_path):
         writer.writerows(rows)
 
 
-def save_predictions(labels, preds, file_names, class_names, save_path):
+def save_predictions(labels, preds, probs, file_names, class_names, save_path):
     with open(save_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["file_name", "true_class_name", "true_label", "pred_label", "pred_class_name"])
+        writer.writerow([
+            "file_name",
+            "true_class_name",
+            "true_label",
+            "pred_label",
+            "pred_class_name",
+            "pred_confidence",
+        ])
 
-        for file_name, true_class_name, true_label, pred_label in zip(file_names, class_names, labels, preds):
+        for file_name, true_class_name, true_label, pred_label, prob_vector in zip(
+            file_names, class_names, labels, preds, probs
+        ):
+            pred_confidence = float(prob_vector[pred_label])
             writer.writerow([
                 file_name,
                 true_class_name,
                 true_label,
                 pred_label,
                 CLASS_NAMES[pred_label],
+                pred_confidence,
             ])
 
 
@@ -176,43 +239,44 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     root_dir = Path(__file__).resolve().parent.parent
-    checkpoint_path = root_dir / "outputs" / "checkpoints" / "resnet18_aug_best.pth"
+    checkpoint_reg_path = root_dir / "outputs" / "checkpoints" / f"{RESNET_REG_TAG}_best.pth"
+    checkpoint_aug_path = root_dir / "outputs" / "checkpoints" / "resnet18_aug_best.pth"
     evaluation_dir = root_dir / "outputs" / "evaluation"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
 
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Không tìm thấy checkpoint: {checkpoint_path}")
+    if not checkpoint_reg_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy ResNet regular checkpoint: {checkpoint_reg_path}")
+    if not checkpoint_aug_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy ResNet aug checkpoint: {checkpoint_aug_path}")
 
-    data_module = UrbanSoundDataLoaderAug()
-    train_loader, val_loader, test_loader = data_module.get_dataloaders()
+    data_module = UrbanSoundDataLoaderAug(num_workers=0)
+    _, _, test_loader = data_module.get_dataloaders()
 
-    model = ResNet18(
-        num_classes=len(CLASS_NAMES),
-        base_channels=BASE_CHANNELS,
-        dropout=DROPOUT,
-    ).to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    model_reg, reg_base_channels, reg_dropout = load_resnet_regular(checkpoint_reg_path, device)
+    model_aug = load_resnet_aug(checkpoint_aug_path, device)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.NLLLoss()
 
-    metrics = evaluate_model(
-        model=model,
+    metrics = evaluate_ensemble(
+        model_reg=model_reg,
+        model_aug=model_aug,
         loader=test_loader,
         criterion=criterion,
         device=device,
     )
 
-    metrics_path = evaluation_dir / "resnet18_aug_test_metrics_tta.json"
-    report_path = evaluation_dir / "resnet18_aug_classification_report_tta.csv"
-    predictions_path = evaluation_dir / "resnet18_aug_test_predictions_tta.csv"
-    cm_csv_path = evaluation_dir / "resnet18_aug_confusion_matrix_tta.csv"
-    cm_img_path = evaluation_dir / "resnet18_aug_confusion_matrix_tta.png"
+    metrics_path = evaluation_dir / "ensemble_test_metrics_tta.json"
+    report_path = evaluation_dir / "ensemble_classification_report_tta.csv"
+    predictions_path = evaluation_dir / "ensemble_test_predictions_tta.csv"
+    cm_csv_path = evaluation_dir / "ensemble_confusion_matrix_tta.csv"
+    cm_img_path = evaluation_dir / "ensemble_confusion_matrix_tta.png"
 
     save_metrics(metrics, metrics_path)
     save_classification_report(metrics["report_dict"], report_path)
     save_predictions(
         metrics["labels"],
         metrics["preds"],
+        metrics["probs"],
         metrics["file_names"],
         metrics["class_names"],
         predictions_path,
@@ -222,7 +286,7 @@ def main():
         metrics["confusion_matrix"],
         CLASS_NAMES,
         cm_img_path,
-        "ResNet18 + Augmentation TTA Confusion Matrix",
+        "Ensemble (ResNet18 + ResNet18-aug) TTA Confusion Matrix",
     )
 
     run = wandb.init(
@@ -231,10 +295,16 @@ def main():
         group=WANDB_GROUP,
         job_type="evaluate",
         config={
-            "model_name": "resnet18_aug",
-            "checkpoint_path": str(checkpoint_path),
+            "model_name": "ensemble_resnet_reg_aug",
+            "checkpoint_reg_path": str(checkpoint_reg_path),
+            "checkpoint_aug_path": str(checkpoint_aug_path),
             "num_classes": len(CLASS_NAMES),
-            "dropout": DROPOUT,
+            "reg_base_channels": reg_base_channels,
+            "reg_dropout": reg_dropout,
+            "aug_base_channels": RESNET_AUG_BASE_CHANNELS,
+            "aug_dropout": RESNET_AUG_DROPOUT,
+            "ensemble_weight_reg": ENSEMBLE_WEIGHT_REG,
+            "ensemble_weight_aug": ENSEMBLE_WEIGHT_AUG,
             "tta_shift": TTA_SHIFT,
         },
     )
@@ -259,8 +329,10 @@ def main():
     run.summary["confusion_matrix_image_path"] = str(cm_img_path)
     run.finish()
 
-    print("Evaluation finished.")
-    print(f"Checkpoint: {checkpoint_path}")
+    print("Ensemble evaluation finished.")
+    print(f"ResNet regular checkpoint: {checkpoint_reg_path}")
+    print(f"ResNet aug checkpoint:     {checkpoint_aug_path}")
+    print(f"Ensemble weights: reg={ENSEMBLE_WEIGHT_REG}, aug={ENSEMBLE_WEIGHT_AUG}")
     print(f"Test Loss: {metrics['test_loss']:.4f}")
     print(f"Test Accuracy: {metrics['accuracy']:.4f}")
     print(f"Test Macro-F1: {metrics['macro_f1']:.4f}")
