@@ -1,0 +1,135 @@
+\section{Bài toán và bộ dữ liệu}
+\label{sec:problem}
+
+\subsection{Phát biểu bài toán}
+
+Đề tài giải quyết bài toán phân loại âm thanh đa lớp có giám sát. Cho một đoạn
+âm thanh ngắn, mô hình cần dự đoán nhãn của đoạn đó trong số mười lớp âm thanh đô
+thị đã định trước. Gọi $x$ là đoạn âm thanh đầu vào và $y$ là nhãn tương ứng, mô
+hình học một hàm ánh xạ
+\[
+f(x) \to y, \qquad y \in \{1, 2, \dots, 10\}.
+\]
+Đầu ra của mô hình là một phân phối xác suất trên mười lớp; nhãn dự đoán là lớp
+có xác suất cao nhất. Đây là bài toán \textit{supervised multi-class
+classification}: từ tập huấn luyện gồm các cặp $(x_i, y_i)$, mô hình được tối ưu
+để giảm sai số dự đoán, đồng thời phải tổng quát hóa tốt sang dữ liệu chưa thấy.
+
+\subsection{Ý nghĩa của bài toán}
+
+Trong đô thị, âm thanh là một kênh thông tin giàu giá trị nhưng thường bị bỏ qua.
+Một hệ thống giám sát có thể dựa vào tiếng súng hay còi báo động để phát cảnh
+báo; phân tích giao thông có thể tận dụng tiếng còi xe và động cơ; quan trắc môi
+trường có thể ước lượng mức ồn và thành phần âm thanh đặc trưng của một khu vực.
+Về mặt học thuật, đây là bài toán tiêu biểu để kiểm chứng năng lực của mô hình
+học sâu trên dữ liệu phi ảnh, vì nó đòi hỏi kết hợp xử lý tín hiệu số, biểu diễn
+đặc trưng và mô hình hóa -- ba mảng kiến thức cốt lõi của môn học.
+
+\subsection{Lý do chọn bộ dữ liệu UrbanSound8K}
+
+UrbanSound8K là một trong những bộ dữ liệu chuẩn cho phân loại âm thanh môi
+trường. Đề tài chọn bộ dữ liệu này vì ba lý do thực tế. Dữ liệu đã được gán nhãn
+sẵn theo từng lớp, phù hợp trực tiếp với bài toán có giám sát. Bộ dữ liệu cũng
+được tác giả gốc chia sẵn thành 10 fold, giúp tổ chức tập huấn luyện, kiểm định
+và kiểm thử một cách rõ ràng mà vẫn giữ được tính tách biệt. Cuối cùng, kích
+thước dữ liệu vừa phải -- đủ để huấn luyện CNN và ResNet trên một GPU đơn, nhưng
+không quá nhỏ để khiến kết quả mất ý nghĩa.
+
+\subsection{Tổng quan bộ dữ liệu}
+
+Bước phân tích dữ liệu khám phá (EDA) cho thấy UrbanSound8K gồm 8732 đoạn âm
+thanh, chia đều về mặt tổ chức thành 10 fold và 10 lớp. Thời lượng trung bình của
+mỗi đoạn khoảng 3{,}61 giây, nhưng phân bố rất lệch: phần lớn đoạn dài xấp xỉ 4
+giây, trong khi một số đoạn chỉ dài 0{,}05 giây. Hai yếu tố không đồng nhất khác
+cũng nổi lên rõ. Thứ nhất, tần số lấy mẫu trải dài từ 8\,kHz đến 192\,kHz, trong
+đó 44{,}1\,kHz và 48\,kHz chiếm đa số. Thứ hai, dữ liệu trộn lẫn cả tín hiệu mono
+và stereo, với phần lớn là stereo.
+
+\begin{figure}[H]
+  \centering
+  \imgfallback{eda_summary.png}{0.62\textwidth}
+  \caption{Tóm tắt kết quả EDA: số mẫu, số lớp, phân bố tần số lấy mẫu, số kênh
+           và thống kê thời lượng.}
+  \label{fig:eda}
+\end{figure}
+
+Mười lớp âm thanh gồm: \texttt{air\_conditioner}, \texttt{car\_horn},
+\texttt{children\_playing}, \texttt{dog\_bark}, \texttt{drilling},
+\texttt{engine\_idling}, \texttt{gun\_shot}, \texttt{jackhammer}, \texttt{siren}
+và \texttt{street\_music}.
+
+\subsubsection{Đặc điểm âm học của các lớp}
+
+Mười lớp này không đồng đều về độ khó. Một nhóm lớp có đặc trưng âm học nổi bật
+và dễ tách: \texttt{car\_horn}, \texttt{gun\_shot} và \texttt{siren} đều có cấu
+trúc năng lượng tập trung hoặc thay đổi mạnh, đột ngột theo thời gian.
+\texttt{dog\_bark} cũng tương đối dễ nhờ các xung năng lượng rõ.
+
+Ngược lại, nhóm âm thanh \textit{cơ khí, mang tính nền} là nguồn nhầm lẫn chính.
+\texttt{air\_conditioner}, \texttt{engine\_idling}, \texttt{drilling} và
+\texttt{jackhammer} đều là những âm thanh lặp lại, năng lượng phân bố khá đều và
+phổ tần số gần nhau. Một con người nghe kỹ vẫn phân biệt được, nhưng trên
+spectrogram, ranh giới giữa chúng khá mờ. Quan sát này được nhắc lại nhiều lần ở
+phần phân tích kết quả, vì đúng nhóm lớp này quyết định phần lớn sai số của mọi
+mô hình. Nó cũng là lý do đề tài không chỉ dùng Accuracy mà bổ sung Macro-F1 và
+confusion matrix khi đánh giá.
+
+\subsection{Kết quả phân tích dữ liệu khám phá}
+
+\subsubsection{Tính nhất quán giữa metadata và file âm thanh}
+
+Trước khi xây dựng pipeline, đề tài kiểm tra xem mỗi dòng metadata có ánh xạ đúng
+tới một file âm thanh tồn tại trên đĩa hay không. Kết quả cho thấy toàn bộ ánh xạ
+đều chính xác, không có file thiếu hay sai đường dẫn. Đây là điều kiện cần để các
+bước \texttt{Dataset}/\texttt{DataLoader} về sau không bị sai nhãn.
+
+\subsubsection{Tần số lấy mẫu}
+
+Tần số lấy mẫu ảnh hưởng trực tiếp tới dải tần biểu diễn được và tới số mẫu tín
+hiệu theo thời gian. Nếu để nguyên sự chênh lệch từ 8\,kHz đến 192\,kHz, mô hình
+có nguy cơ học nhầm \textit{sự khác biệt về định dạng} thay vì đặc trưng âm học
+của lớp. Do đó toàn bộ dữ liệu cần được đưa về một tần số chung.
+
+\begin{figure}[H]
+  \centering
+  \imgfallback{eda_sample_rate.png}{0.7\textwidth}
+  \caption{Phân bố tần số lấy mẫu của UrbanSound8K. Phần lớn đoạn ở mức
+           44{,}1\,kHz và 48\,kHz.}
+  \label{fig:sr}
+\end{figure}
+
+\subsubsection{Số kênh}
+
+Vì dữ liệu trộn mono và stereo, đầu vào mô hình sẽ không đồng nhất nếu giữ nguyên
+số kênh. Việc gộp về mono vừa chuẩn hóa kích thước đầu vào, vừa giảm chi phí tính
+toán mà gần như không làm mất thông tin phân loại.
+
+\begin{figure}[H]
+  \centering
+  \imgfallback{eda_channels.png}{0.55\textwidth}
+  \caption{Phân bố số kênh: đa số đoạn là stereo, một phần nhỏ là mono.}
+  \label{fig:ch}
+\end{figure}
+
+\subsubsection{Thời lượng}
+
+Độ dài các đoạn không cố định, tuy đa số gần 4 giây. Do CNN và ResNet đòi hỏi đầu
+vào có kích thước cố định, cần một chiến lược chuẩn hóa thời lượng. Đề tài chọn
+mốc 4{,}0 giây -- vừa bao phủ phần lớn các đoạn mà không phải cắt bỏ nhiều, vừa
+là một con số tròn thuận tiện cho việc tính toán kích thước đặc trưng.
+
+\begin{figure}[H]
+  \centering
+  \imgfallback{eda_duration.png}{0.7\textwidth}
+  \caption{Phân bố thời lượng: phần lớn đoạn dồn quanh mốc 4 giây.}
+  \label{fig:dur}
+\end{figure}
+
+\subsection{Quyết định tiền xử lý rút ra từ EDA}
+
+Kết hợp các quan sát trên, đề tài cố định bốn quyết định tiền xử lý: chuyển toàn
+bộ tín hiệu về mono; resample về 22{,}05\,kHz; chuẩn hóa độ dài về 4{,}0 giây
+bằng cách pad hoặc cắt; và trích xuất log-Mel spectrogram làm đặc trưng đầu vào.
+Bốn quyết định này được mô tả chi tiết ở Mục~\ref{sec:method} và được áp dụng
+giống hệt nhau cho mọi mô hình, để khác biệt về kết quả chỉ phản ánh khác biệt về
+mô hình chứ không phải về dữ liệu.

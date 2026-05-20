@@ -1,0 +1,182 @@
+\section{Phương pháp và triển khai}
+\label{sec:method}
+
+\subsection{Tổng quan pipeline}
+
+Pipeline của đề tài được tổ chức thành các bước rời nhau, mỗi bước nằm trong một
+file Python riêng dưới thư mục \texttt{src/}, để dễ kiểm thử và chạy được trên cả
+Google Colab lẫn máy cá nhân. Trình tự xử lý như sau:
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=1pt]
+  \item Đọc file âm thanh từ UrbanSound8K.
+  \item Chuyển tín hiệu về mono.
+  \item Resample về 22{,}05\,kHz.
+  \item Pad hoặc cắt về thời lượng cố định 4{,}0 giây.
+  \item Trích xuất Mel spectrogram rồi lấy log để được log-Mel spectrogram.
+  \item Chuẩn hóa đặc trưng.
+  \item Tạo \texttt{Dataset} và \texttt{DataLoader} cho train, validation, test.
+  \item Huấn luyện mô hình (CNN, ResNet18, hoặc ResNet18 + augmentation).
+  \item Đánh giá bằng Accuracy, Macro-F1, classification report và confusion
+        matrix; với họ ResNet còn áp dụng test-time augmentation.
+\end{enumerate}
+
+Một chi tiết kỹ thuật đáng nói: bước trích xuất log-Mel spectrogram được thực
+hiện một lần cho toàn bộ dữ liệu và lưu lại thành một tệp đặc trưng
+(\textit{feature cache}). Nhờ đó, các lần huấn luyện sau không phải đọc và biến
+đổi lại âm thanh, rút ngắn đáng kể thời gian thí nghiệm.
+
+\subsection{Tiền xử lý dữ liệu âm thanh}
+
+\subsubsection{Chuyển về mono}
+
+Do dữ liệu trộn mono và stereo, mọi file được đưa về mono bằng cách lấy trung
+bình các kênh. Bước này chuẩn hóa số chiều kênh của đầu vào và giảm chi phí tính
+toán.
+
+\subsubsection{Resample về 22{,}05\,kHz}
+
+EDA cho thấy tần số lấy mẫu trải dài từ 8\,kHz đến 192\,kHz. Toàn bộ dữ liệu được
+resample về 22{,}05\,kHz -- một mức phổ biến trong xử lý âm thanh, đủ giữ phần
+lớn thông tin hữu ích của âm thanh đô thị (chủ yếu nằm ở dải tần thấp và trung)
+trong khi vẫn nhẹ hơn nhiều so với 44{,}1\,kHz.
+
+\subsubsection{Chuẩn hóa độ dài về 4{,}0 giây}
+
+Để mọi mẫu có cùng kích thước, độ dài được cố định ở 4{,}0 giây. Với tần số
+22{,}05\,kHz, điều này tương ứng $22050 \times 4{,}0 = 88200$ mẫu. Đoạn ngắn hơn
+được pad bằng giá trị 0 ở cuối; đoạn dài hơn được cắt về đúng 88200 mẫu.
+
+\subsubsection{Trích xuất log-Mel spectrogram}
+
+Tín hiệu sau chuẩn hóa được chuyển sang Mel spectrogram với các tham số:
+$n_{\text{fft}} = 1024$, $\text{hop\_length} = 512$, $n_{\text{mels}} = 128$.
+Biên độ sau đó được đưa về thang decibel với $\text{top\_db} = 80$. Kết quả là
+một log-Mel spectrogram một kênh kích thước $128 \times 173$ (tần số $\times$
+thời gian), đóng vai trò đặc trưng đầu vào cho mọi mô hình.
+
+\subsubsection{Chuẩn hóa đặc trưng}
+
+Mỗi spectrogram được chuẩn hóa về trung bình 0 và độ lệch chuẩn 1. Bước này thu
+hẹp chênh lệch biên độ giữa các mẫu, giúp quá trình tối ưu ổn định và hội tụ
+nhanh hơn.
+
+\subsection{Tổ chức dữ liệu và \texttt{DataLoader}}
+
+Dữ liệu được chia dựa trên cấu trúc 10 fold sẵn có. Trong toàn bộ thực nghiệm,
+fold~1 được dùng làm tập test, fold~2 làm tập validation, tám fold còn lại làm
+tập train. Cách chia này đảm bảo tập test hoàn toàn tách khỏi quá trình huấn
+luyện và việc lựa chọn mô hình.
+
+Mỗi mẫu do \texttt{Dataset} trả về là một dictionary gồm: đặc trưng log-Mel, nhãn
+số, tên lớp, tên file, fold và đường dẫn. Việc giữ kèm tên file và tên lớp tuy
+không cần cho huấn luyện nhưng rất tiện khi gỡ lỗi và phân tích các trường hợp dự
+đoán sai. \texttt{DataLoader} trả về ba bộ nạp riêng cho train, validation và
+test. Ở nhánh có augmentation, chỉ tập train mới được tăng cường; validation và
+test luôn giữ nguyên để kết quả đánh giá phản ánh đúng năng lực tổng quát hóa.
+
+\subsection{Mô hình CNN baseline}
+
+CNN baseline là mô hình cơ sở, đóng vai trò mốc tham chiếu cho các cấu hình phức
+tạp hơn. Kiến trúc gồm bốn khối tích chập với số kênh tăng dần $16 \to 32 \to 64
+\to 128$. Mỗi khối gồm một tầng tích chập $3\times 3$, batch normalization và
+ReLU; ba khối đầu kèm max pooling $2\times 2$, khối cuối dùng adaptive average
+pooling để thu về một vector đặc trưng 128 chiều. Bộ phân loại gồm một tầng ẩn
+$128 \to 64$ với ReLU và dropout $0{,}3$, rồi một tầng $64 \to 10$.
+
+Lý do chọn CNN làm baseline rất rõ ràng: kiến trúc này phù hợp tự nhiên với dữ
+liệu hai chiều dạng spectrogram, dễ huấn luyện và ít nhạy với siêu tham số. Nó
+cho biết một mô hình đơn giản nhưng phù hợp có thể đạt tới đâu, từ đó làm chuẩn
+để đánh giá liệu ResNet18 có thực sự mang lại lợi ích hay không.
+
+\subsection{Mô hình ResNet18}
+
+ResNet18 được dùng như mô hình sâu hơn, đủ năng lực học các đặc trưng phức tạp mà
+CNN baseline khó nắm bắt. Đề tài không dùng trọng số tiền huấn luyện, nhằm đánh
+giá trung thực khả năng học của kiến trúc trực tiếp từ UrbanSound8K. Hai điều
+chỉnh được thực hiện so với ResNet18 gốc dành cho ảnh:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{Đầu vào một kênh.} Tầng tích chập đầu được sửa để nhận trực tiếp
+        spectrogram một kênh, thay vì ba kênh RGB, tránh phải nhân bản kênh một
+        cách giả tạo.
+  \item \textbf{Stem nhẹ.} Phần stem được giữ ở dạng tích chập $3\times 3$ stride
+        1, không hạ kích thước sớm bằng pooling. Trên spectrogram, các cấu trúc
+        năng lượng nhỏ theo thời gian hoặc tần số có thể mang ý nghĩa phân biệt,
+        nên cần được giữ lại ở giai đoạn đầu.
+\end{itemize}
+
+Mô hình gồm bốn tầng (stage), mỗi tầng có hai khối \texttt{BasicBlock} với kết
+nối tắt; dropout dạng không gian được chèn trong khối để hạn chế overfitting. Số
+kênh nền (\textit{base channels}) được dùng như một tham số dung lượng: cấu hình
+ResNet18 không augmentation dùng base channels 48, còn cấu hình có augmentation
+nâng lên 64 để bù lại lượng nhiễu mà augmentation đưa vào.
+
+\subsection{Augmentation trong miền spectrogram}
+
+Nhánh augmentation áp dụng các phép biến đổi sau, \textit{chỉ trên tập train}:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item thêm nhiễu Gaussian nhẹ;
+  \item dịch theo trục thời gian bằng phép \texttt{roll};
+  \item frequency masking -- che một dải tần số;
+  \item time masking -- che một dải thời gian.
+\end{itemize}
+
+Ngoài bốn phép trên ở mức từng mẫu, MixUp được áp dụng ở mức batch: với một xác
+suất nhất định, hai mẫu trong batch được trộn tuyến tính cùng với nhãn của chúng.
+
+Cường độ augmentation đã được tinh chỉnh trong quá trình làm. Cấu hình ban đầu
+đặt masking khá rộng (che tới khoảng $17\%$ chiều thời gian, hai dải mỗi loại) và
+MixUp với xác suất $0{,}5$. Quan sát kết quả cho thấy mức này làm hỏng đặc trưng
+của nhóm âm thanh cơ khí vốn ``đều và lặp'' -- che mất một dải thời gian dài đồng
+nghĩa với xóa đi chính tính lặp đặc trưng của chúng. Vì vậy, cấu hình cuối cùng
+giảm độ rộng masking xuống còn một dải hẹp mỗi loại và hạ xác suất MixUp xuống
+$0{,}3$. Đây là một minh họa cụ thể cho nhận định ở Mục~\ref{sec:litreview}:
+augmentation quá mạnh có thể phản tác dụng.
+
+\subsection{Test-time augmentation và ensemble}
+
+\subsubsection{Test-time augmentation (TTA)}
+
+Khi đánh giá họ mô hình ResNet, đề tài áp dụng test-time augmentation. Với mỗi
+mẫu test, mô hình dự đoán trên ba phiên bản đầu vào -- bản gốc và hai bản dịch
+nhẹ theo trục thời gian -- rồi lấy trung bình logit. TTA không phải huấn luyện
+lại, chi phí thấp, và giúp dự đoán ổn định hơn trước những dịch chuyển nhỏ về
+thời gian vốn không làm thay đổi nhãn.
+
+\subsubsection{Ensemble hai mô hình}
+
+Cấu hình thứ tư của đề tài là ensemble giữa ResNet18 và ResNet18 + augmentation.
+Hai mô hình này được huấn luyện độc lập với cấu hình khác nhau nên có \textit{hồ
+sơ lỗi} khác nhau: bản không augmentation mạnh ở nhóm âm thanh cơ khí, bản có
+augmentation mạnh hơn ở một số lớp ``trầm'' và ít mẫu. Ensemble được thực hiện
+đơn giản bằng cách lấy trung bình xác suất softmax (sau TTA) của hai mô hình với
+trọng số bằng nhau. Mục tiêu là khai thác tính bù trừ đó mà không cần huấn luyện
+thêm.
+
+\subsection{Chiến lược huấn luyện}
+
+Tất cả mô hình được huấn luyện trên tập train, theo dõi trên tập validation và
+chỉ checkpoint tốt nhất (theo Accuracy validation) mới được dùng để đánh giá
+test. Một số điểm chung trong recipe huấn luyện: hàm mất mát là cross-entropy có
+label smoothing; tối ưu bằng Adam/AdamW~\cite{loshchilov2019}; learning rate được
+điều chỉnh tự động (CNN dùng \texttt{ReduceLROnPlateau}, họ ResNet dùng cosine
+annealing); và có early stopping để dừng khi validation không còn cải thiện.
+ResNet còn dùng gradient clipping và mixed-precision để huấn luyện ổn định, nhanh
+hơn. Các siêu tham số cụ thể của từng cấu hình được liệt kê ở
+Mục~\ref{sec:expdesign}.
+
+\subsection{Chỉ số đánh giá và công cụ theo dõi}
+
+Đề tài dùng ba nhóm chỉ số. \textbf{Accuracy} -- tỷ lệ mẫu dự đoán đúng -- cho
+cái nhìn tổng thể nhưng có thể che giấu sự mất cân bằng giữa các lớp.
+\textbf{Macro-F1} -- trung bình F1-score của mười lớp -- bổ khuyết cho điều đó:
+vì mỗi lớp đóng góp như nhau bất kể số mẫu, một mô hình chỉ giỏi vài lớp dễ sẽ bị
+Macro-F1 ``phạt''. \textbf{Confusion matrix} và \textbf{classification report}
+cho phép phân tích định tính: nhìn ra chính xác cặp lớp nào hay bị nhầm và lớp
+nào kéo điểm chung xuống.
+
+Toàn bộ quá trình huấn luyện và đánh giá được ghi log bằng Weights \& Biases. Công
+cụ này lưu lại loss, accuracy, Macro-F1 theo từng epoch, lưu checkpoint và lịch
+sử các lần chạy, nhờ đó việc so sánh giữa các cấu hình trở nên minh bạch và tái
+lập được.

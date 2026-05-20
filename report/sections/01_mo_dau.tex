@@ -1,0 +1,73 @@
+\section{Mở đầu}
+
+\subsection{Bối cảnh nghiên cứu}
+
+Học sâu trong vài năm gần đây không còn giới hạn ở dữ liệu ảnh mà đã mở rộng
+mạnh sang xử lý âm thanh. Khác với ảnh -- vốn là một ma trận hai chiều tương
+đối ổn định -- tín hiệu âm thanh là một chuỗi biến thiên theo thời gian, độ dài
+không cố định và dễ bị nhiễu môi trường chi phối. Chính những đặc điểm này khiến
+việc nhận diện âm thanh tự động trở thành một bài toán vừa khó vừa đáng làm.
+
+Trong không gian đô thị, âm thanh hiện diện dày đặc: tiếng máy điều hòa, còi xe,
+tiếng trẻ chơi đùa, chó sủa, máy khoan, động cơ chạy không tải, tiếng súng, búa
+khoan, còi báo động và nhạc đường phố. Mỗi loại đều mang một phần thông tin về
+môi trường xung quanh. Một hệ thống biết phân loại chúng có thể phục vụ giám sát
+môi trường, hỗ trợ thành phố thông minh, cảnh báo sự kiện bất thường hoặc làm
+đầu vào cho các hệ thống phân tích ngữ cảnh ở mức cao hơn.
+
+Bài toán \textit{urban sound classification} vì vậy có giá trị cả về ứng dụng
+lẫn học thuật. Hướng tiếp cận phổ biến trong học sâu là không làm việc trực tiếp
+với dạng sóng thô mà chuyển tín hiệu sang miền thời gian -- tần số thông qua
+spectrogram hoặc Mel spectrogram, rồi đưa biểu diễn hai chiều này vào mạng nơ-ron
+tích chập. Đề tài này đi theo đúng hướng đó.
+
+\subsection{Động lực thực hiện đề tài}
+
+Đề tài được lựa chọn trước hết vì nó là một bài toán học sâu nằm \textit{ngoài}
+miền ảnh quen thuộc. Làm việc với âm thanh buộc người thực hiện phải hiểu rõ vai
+trò của tiền xử lý và biểu diễn đặc trưng -- những bước mà ở bài toán ảnh thường
+được xem nhẹ. Đây là cơ hội tốt để nhìn lại toàn bộ một pipeline học sâu thay vì
+chỉ tập trung vào kiến trúc mô hình.
+
+Bộ dữ liệu UrbanSound8K phù hợp với phạm vi một bài tập lớn cá nhân: đủ lớn để
+kết quả có ý nghĩa nhưng vẫn vừa sức huấn luyện trên tài nguyên hạn chế, lại được
+cộng đồng nghiên cứu sử dụng rộng rãi nên có nhiều mốc tham chiếu. Cuối cùng, đề
+tài cho phép triển khai trọn vẹn một quy trình -- từ phân tích dữ liệu, tiền xử
+lý, xây dựng \texttt{Dataset}/\texttt{DataLoader}, huấn luyện, đánh giá đến viết
+báo cáo -- nên rất thích hợp để tổng hợp kiến thức của môn học.
+
+\subsection{Mục tiêu nghiên cứu}
+
+Mục tiêu tổng quát là xây dựng và đánh giá một hệ thống phân loại âm thanh đô thị
+trên UrbanSound8K, sử dụng biểu diễn log-Mel spectrogram và các mô hình học sâu.
+Cụ thể, đề tài hướng tới các nội dung sau:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item Phân tích đặc điểm của UrbanSound8K, đặc biệt là các yếu tố không đồng
+        nhất trong dữ liệu gốc, để rút ra quyết định tiền xử lý.
+  \item Thiết kế một pipeline tiền xử lý thống nhất, đưa toàn bộ dữ liệu về cùng
+        một chuẩn đầu vào và trích xuất log-Mel spectrogram.
+  \item Triển khai một mô hình CNN làm mốc cơ sở, một mô hình ResNet18 được điều
+        chỉnh cho đầu vào spectrogram một kênh, và khảo sát tác động của
+        augmentation trong miền spectrogram.
+  \item Kết hợp các mô hình đã huấn luyện theo hướng ensemble nhằm tận dụng tính
+        bù trừ lỗi giữa chúng.
+  \item Đánh giá và phân tích kết quả bằng Accuracy, Macro-F1, classification
+        report và confusion matrix, từ đó so sánh công bằng giữa các cấu hình.
+\end{itemize}
+
+Cần nói rõ ngay từ đầu rằng đề tài không đặt mục tiêu vượt các kết quả tốt nhất
+đã công bố trên UrbanSound8K. Trong khuôn khổ một bài tập lớn, câu hỏi thực tế
+hơn là: với cùng một pipeline rõ ràng và tài nguyên vừa phải, các lựa chọn về
+kiến trúc và augmentation ảnh hưởng đến kết quả ra sao, và ta rút ra được điều gì
+từ những khác biệt đó.
+
+\subsection{Cấu trúc báo cáo}
+
+Phần còn lại của báo cáo được tổ chức như sau. Mục~\ref{sec:problem} mô tả bài
+toán và bộ dữ liệu, kèm kết quả phân tích dữ liệu khám phá (EDA).
+Mục~\ref{sec:litreview} điểm lại các hướng tiếp cận cho phân loại âm thanh.
+Mục~\ref{sec:method} trình bày phương pháp: pipeline tiền xử lý, các mô hình và
+chiến lược huấn luyện. Mục~\ref{sec:expdesign} mô tả thiết kế thực nghiệm.
+Mục~\ref{sec:results} trình bày, so sánh và phân tích kết quả của bốn cấu hình.
+Mục~\ref{sec:conclusion} tổng kết và nêu hướng phát triển.
